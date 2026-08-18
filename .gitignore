@@ -1,0 +1,30 @@
+```
+# Dependencies
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.env.local
+*.env.*
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Testing
+.coverage
+htmlcov/
+.coverage.*
+.testmondata
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
+```
