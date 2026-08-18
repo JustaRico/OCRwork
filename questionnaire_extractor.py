@@ -140,6 +140,7 @@ def convert_to_images(input_path: str) -> List[Image.Image]:
 def preprocess_image(image: Image.Image) -> Image.Image:
     """
     Preprocess image for better OCR results.
+    Optimized for handwritten forms with printed question text.
     
     Args:
         image: PIL Image object
@@ -147,18 +148,26 @@ def preprocess_image(image: Image.Image) -> Image.Image:
     Returns:
         Preprocessed PIL Image
     """
-    # Convert to grayscale
-    image = image.convert('L')
+    import cv2
+    import numpy as np
     
-    # Increase contrast by adjusting levels
-    from PIL import ImageEnhance
-    enhancer = ImageEnhance.Contrast(image)
-    image = enhancer.enhance(1.5)
+    # Convert PIL to OpenCV format
+    img_array = np.array(image)
+    if len(img_array.shape) == 3:
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    else:
+        gray = img_array.copy()
     
-    enhancer = ImageEnhance.Brightness(image)
-    image = enhancer.enhance(1.2)
+    # Apply Gaussian blur to reduce noise
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     
-    return image
+    # Use Otsu's thresholding after Gaussian filtering
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # Convert back to PIL Image
+    processed = Image.fromarray(thresh)
+    
+    return processed
 
 
 def extract_text_with_ocr(image: Image.Image, lang: str = 'eng') -> str:
@@ -175,8 +184,9 @@ def extract_text_with_ocr(image: Image.Image, lang: str = 'eng') -> str:
     # Preprocess image
     processed_image = preprocess_image(image)
     
-    # Configure Tesseract for better accuracy
-    custom_config = r'--oem 3 --psm 6'
+    # Configure Tesseract for better accuracy with forms
+    # PSM 11: Sparse text - find as much text as possible in no particular order
+    custom_config = r'--oem 3 --psm 11'
     
     try:
         # Try Dutch first if available, fallback to English
@@ -200,8 +210,9 @@ def extract_text_regions(image: Image.Image) -> List[Tuple[str, int, int, int, i
     """
     processed_image = preprocess_image(image)
     
-    # Get detailed OCR data with bounding boxes
-    data = pytesseract.image_to_data(processed_image, output_type=pytesseract.Output.DICT)
+    # Get detailed OCR data with bounding boxes using sparse text mode
+    data = pytesseract.image_to_data(processed_image, output_type=pytesseract.Output.DICT, 
+                                     config='--oem 3 --psm 11')
     
     regions = []
     n_boxes = len(data['text'])
@@ -213,7 +224,8 @@ def extract_text_regions(image: Image.Image) -> List[Tuple[str, int, int, int, i
             y = data['top'][i]
             w = data['width'][i]
             h = data['height'][i]
-            regions.append((text, x, y, w, h))
+            conf = data['conf'][i]
+            regions.append((text, x, y, w, h, conf))
     
     return regions
 
@@ -221,9 +233,7 @@ def extract_text_regions(image: Image.Image) -> List[Tuple[str, int, int, int, i
 def find_answers_in_text(text: str) -> Dict[str, str]:
     """
     Parse OCR text to identify questions and their corresponding answers.
-    
-    This uses pattern matching and spatial reasoning to associate answers
-    with their corresponding questions.
+    Optimized for speed using pre-computed question signatures.
     
     Args:
         text: Full OCR text from the image
@@ -237,106 +247,87 @@ def find_answers_in_text(text: str) -> Dict[str, str]:
     current_question = None
     current_answer = []
     
-    # Clean and normalize lines
-    cleaned_lines = []
-    for line in lines:
-        line = line.strip()
-        if line:
-            cleaned_lines.append(line)
+    # Pre-compute question signatures for faster matching
+    question_sigs = []
+    for q in QUESTIONS:
+        q_lower = q.lower()
+        words = q_lower.split()
+        sig = {
+            'keywords': set(w for w in words[:5] if len(w) > 2),
+            'phrases': set(' '.join(words[j:j+3]) for j in range(min(len(words)-2, 10)) if len(' '.join(words[j:j+3])) > 5),
+            'full': q_lower
+        }
+        question_sigs.append((q, sig))
     
-    i = 0
-    while i < len(cleaned_lines):
-        line = cleaned_lines[i]
+    # Skip patterns compiled
+    skip_patterns_compiled = [
+        re.compile(p, re.IGNORECASE) for p in [
+            r'^\[_\]', r'^\[X\]', r'^\[_J',
+            r'^Laatste nieuws', r'^Tech & Innovatie', r'^Klimaat',
+            r'^Health & Mindset', r'^Veiligheid & Criminaliteit',
+            r'^Entertainment', r'^Studie & Ontwikkeling',
+            r'^Politiek & Maatschappij', r'^Sport', r'^112-nieuws',
+            r'^Reizen & Avontuur', r'^Activisme & Impact',
+            r'^Geld & Carri', r'^Cultuur', r'^Lifestyle',
+            r'^Waarom wel niet:', r'^Interessant, Relevant',
+            r'^Gaat over jou', r'^Had invlo', r'^voelde je beter',
+            r'^Het veranderde',
+        ]
+    ]
+    
+    # Clean lines once
+    cleaned_lines = [line.strip() for line in lines if line.strip()]
+    
+    for line in cleaned_lines:
+        line_lower = line.lower()
+        line_words = set(line_lower.split())
         
-        # Skip very short noise (1-2 chars unless it's a known option like M, V, X)
-        if len(line) <= 2 and line not in ['M', 'V', 'X', 'Ja', 'Nee']:
-            # But still check if it could be part of an answer
-            pass
-        
-        # Check if this line matches a known question
+        # Fast question matching
         matched_question = None
-        best_match_score = 0
+        best_score = 0
         
-        for question in QUESTIONS:
-            # Partial match - check if question keywords are present
-            question_keywords = question.lower().split()[:5]  # First 5 words
-            line_lower = line.lower()
+        for question, sig in question_sigs:
+            # Keyword match score
+            score = len(sig['keywords'] & line_words)
+            # Phrase match bonus
+            for phrase in sig['phrases']:
+                if phrase in line_lower:
+                    score += 2
             
-            # Count keyword matches
-            match_count = sum(1 for kw in question_keywords if kw in line_lower and len(kw) > 2)
-            
-            # Also check for longer phrases
-            question_words = question.lower().split()
-            for j in range(len(question_words) - 2):
-                phrase = ' '.join(question_words[j:j+3])
-                if phrase in line_lower and len(phrase) > 5:
-                    match_count += 2
-            
-            if match_count > best_match_score:
-                best_match_score = match_count
+            if score > best_score:
+                best_score = score
                 matched_question = question
         
-        # Require at least 2 keyword matches or a long phrase match
-        if matched_question and best_match_score >= 2:
-            # Save previous question-answer pair
+        # Process match
+        if matched_question and best_score >= 2:
             if current_question and current_answer:
                 answer_text = ' '.join(current_answer).strip()
-                # Filter out noise and question fragments
-                if answer_text and len(answer_text) > 3:
-                    # Remove common noise patterns
+                if len(answer_text) > 2:
                     answer_text = re.sub(r'\([^)]*\)\s*$', '', answer_text).strip()
                     if answer_text and not re.match(r'^[•\-\*]\s*$', answer_text):
                         answers[current_question] = answer_text
             
-            # Start new question
             current_question = matched_question
             current_answer = []
             
-            # Check if answer is on the same line (after the question mark or colon)
             if ':' in line:
-                answer_part = line.split(':', 1)[1].strip()
-                if answer_part and len(answer_part) > 2:
-                    # Make sure it's not just repeating the question
-                    if answer_part.lower() not in current_question.lower():
-                        current_answer.append(answer_part)
+                part = line.split(':', 1)[1].strip()
+                if 1 < len(part) < 50 and part.lower() not in current_question.lower():
+                    current_answer.append(part)
             elif '?' in line:
-                answer_part = line.split('?', 1)[1].strip()
-                if answer_part and len(answer_part) > 2:
-                    if answer_part.lower() not in current_question.lower():
-                        current_answer.append(answer_part)
-        else:
-            # This might be an answer line
-            if current_question and line:
-                # Skip checkbox markers and common noise
-                if not re.match(r'^[•\-\*]\s*$', line):
-                    # Skip if it looks like a checkbox option label from the template
-                    is_option = False
-                    for options in CHECKBOX_OPTIONS.values():
-                        if any(opt.lower() == line.lower() for opt in options):
-                            is_option = True
-                            break
-                    
-                    # Skip content criteria labels
-                    for criterion in CONTENT_CRITERIA:
-                        if criterion.lower() == line.lower():
-                            is_option = True
-                            break
-                    
-                    # Skip if line is too similar to question (likely just question text)
-                    if current_question and len(line) > 10:
-                        similarity = len(set(line.lower()) & set(current_question.lower())) / max(len(line), len(current_question))
-                        if similarity > 0.7:
-                            is_option = True
-                    
-                    if not is_option and len(line) > 1:
-                        current_answer.append(line)
-        
-        i += 1
+                part = line.split('?', 1)[1].strip()
+                if 1 < len(part) < 50 and part.lower() not in current_question.lower():
+                    current_answer.append(part)
+        elif current_question and line:
+            if len(line) == 1 and line not in ['M', 'V', 'X'] and not line.isdigit():
+                continue
+            
+            if not any(p.search(line) for p in skip_patterns_compiled):
+                current_answer.append(line)
     
-    # Save last question-answer pair
     if current_question and current_answer:
         answer_text = ' '.join(current_answer).strip()
-        if answer_text and len(answer_text) > 3:
+        if len(answer_text) > 2:
             answer_text = re.sub(r'\([^)]*\)\s*$', '', answer_text).strip()
             if answer_text and not re.match(r'^[•\-\*]\s*$', answer_text):
                 answers[current_question] = answer_text
