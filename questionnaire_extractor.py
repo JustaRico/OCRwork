@@ -57,6 +57,7 @@ except ImportError:
 
 
 # Define the questionnaire structure based on the PDF
+# These are the 14 numbered answer fields from the questionnaire
 QUESTIONS = [
     "Respondentnummer",
     "Geïnterviewde is een man, vrouw, X",
@@ -72,24 +73,6 @@ QUESTIONS = [
     "Wat vond je van dit nieuws?",
     "Vind je het leuk om mee te doen aan vervolgonderzoek?",
     "Hoe wil jij dit nieuws zien?",
-    "Waar ging dat nieuws over?",
-    "Ging dit nieuws over jouw buurt, stad of regio?",
-    "Wat voor bericht was het?",
-    "Hoe ben je bij dit nieuws gekomen?",
-    "Gedeeld, met iemand besproken?",
-    "Ben je ergens naartoe gegaan?",
-    "Verder gezocht naar meer nieuws over zelfde onderwerp?",
-    "Of juist niets gedaan, waarom?",
-    "Waarom wel niet:",
-    "Interessant, Relevant, Boeiend, Toegankelijk?",
-    "Gaat over jou / jongeren?",
-    "Had invloed op je dagelijks leven?",
-    "Kon je er wat mee? raakte jou persoonlijk?",
-    "voelde je beter geïnformeerd?",
-    "Het veranderde iets aan wat je deed of dacht?",
-    "Dagdeel, redactiesessie, 50 euro vergoeding. noteer e-mail",
-    "Platform",
-    "Vorm",
 ]
 
 # Checkbox options for multiple choice questions
